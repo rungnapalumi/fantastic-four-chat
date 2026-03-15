@@ -21,8 +21,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from mediapipe.tasks import python as mp_tasks
 from mediapipe.tasks.python import vision
+from mediapipe.tasks.python.vision import pose_landmarker
 
 from analysis import run_analysis
+
+# MediaPipe pose landmark names (index 0–32)
+POSE_LANDMARK_NAMES = [e.name for e in pose_landmarker.PoseLandmark]
 
 app = FastAPI(title="Video Pose Overlay API")
 
@@ -145,7 +149,10 @@ def _save_skeleton_cache(cache_key: str, frames: list[dict]) -> None:
 def extract_pose_landmarks(video_path: Path) -> list[dict]:
     """Process 5 frames per second with MediaPipe PoseLandmarker, return landmarks per frame."""
     model_path = _get_model_path()
-    base_options = mp_tasks.BaseOptions(model_asset_path=str(model_path))
+    base_options = mp_tasks.BaseOptions(
+        model_asset_path=str(model_path),
+        delegate=mp_tasks.BaseOptions.Delegate.CPU,  # Avoid NSOpenGLPixelFormat error on macOS
+    )
     options = vision.PoseLandmarkerOptions(
         base_options=base_options,
         running_mode=vision.RunningMode.VIDEO,
@@ -178,14 +185,18 @@ def extract_pose_landmarks(video_path: Path) -> list[dict]:
 
             landmarks_list = []
             if result.pose_landmarks and len(result.pose_landmarks) > 0:
-                for lm in result.pose_landmarks[0]:
+                for i, lm in enumerate(result.pose_landmarks[0]):
+                    name = POSE_LANDMARK_NAMES[i] if i < len(POSE_LANDMARK_NAMES) else f"LANDMARK_{i}"
                     landmarks_list.append({
+                        "name": name,
                         "x": float(lm.x),
                         "y": float(lm.y),
                         "z": float(lm.z),
                     })
             while len(landmarks_list) < 33:
-                landmarks_list.append({"x": 0, "y": 0, "z": 0})
+                i = len(landmarks_list)
+                name = POSE_LANDMARK_NAMES[i] if i < len(POSE_LANDMARK_NAMES) else f"LANDMARK_{i}"
+                landmarks_list.append({"name": name, "x": 0, "y": 0, "z": 0})
 
             frames.append({
                 "frame_index": frame_idx,

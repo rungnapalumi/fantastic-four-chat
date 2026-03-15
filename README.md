@@ -68,13 +68,17 @@ The algorithm looks at how body parts move between consecutive frames and classi
 ### Prerequisites
 
 - **Node.js** (for the frontend)
-- **Python 3.10+** (for the backend)
+- **Python 3.10, 3.11, or 3.12** (for the backend). **Do not use Python 3.13** — MediaPipe crashes on macOS ARM due to protobuf/PyArrow conflicts. Use `pyenv install 3.11` or install Python 3.11 from [python.org](https://www.python.org/downloads/).
 - **FFmpeg** (for video conversion). Install: `winget install ffmpeg` (Windows) or `brew install ffmpeg` (Mac)
 
 ### Backend
 
+Use **Python 3.10, 3.11, or 3.12** (not 3.13). Create a virtual environment, then run:
+
 ```bash
 cd backend
+python -m venv venv
+source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
@@ -87,6 +91,23 @@ npm start
 ```
 
 Open [http://localhost:3000](http://localhost:3000). Upload a video to test.
+
+### Backend crashes on startup (macOS)
+
+If you see `mutex lock failed: Invalid argument` or `libc++abi: terminating`, you are likely using **Python 3.13**. MediaPipe does not support Python 3.13 and conflicts with protobuf/PyArrow on macOS ARM.
+
+**Fix:** Use Python 3.11 (or 3.10/3.12):
+
+```bash
+# With pyenv:
+pyenv install 3.11
+pyenv local 3.11
+cd backend
+python -m venv venv
+source venv/bin/activate  # or: venv\Scripts\activate on Windows
+pip install -r requirements.txt
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
 
 ---
 

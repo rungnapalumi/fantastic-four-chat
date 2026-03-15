@@ -6,6 +6,7 @@
 # Python
 __pycache__/
 *.pyc
+backend/venv/
 /.pnp
 .pnp.js
 

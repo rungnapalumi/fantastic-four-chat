@@ -12,7 +12,8 @@ import {
 } from 'recharts';
 import './App.css';
 
-const MOTION_COLORS = {
+// Legacy motion types (original graph)
+const LEGACY_MOTION_COLORS = {
   Advancing: '#22c55e',
   Retreating: '#ef4444',
   Enclosing: '#a855f7',
@@ -20,6 +21,29 @@ const MOTION_COLORS = {
   Directing: '#f59e0b',
   Indirecting: '#06b6d4',
   Neutral: '#64748b',
+};
+
+// Second graph: 6 types from Authority Coding Sheet (professor's coding)
+const MOTION_TYPES_AUTHORITY = ['Pressing', 'Floating', 'Dabbing', 'Punching', 'Slashing', 'Gliding'];
+const MOTION_COLORS = {
+  Pressing: '#8b5cf6',
+  Floating: '#3b82f6',
+  Dabbing: '#f59e0b',
+  Punching: '#ef4444',
+  Slashing: '#a855f7',
+  Gliding: '#22c55e',
+};
+
+// Laban Effort factors (derived from motion types)
+const EFFORT_COLORS = {
+  Light: '#86efac',
+  Strong: '#f87171',
+  Sustained: '#93c5fd',
+  Sudden: '#fbbf24',
+  Direct: '#34d399',
+  Indirect: '#a78bfa',
+  Free: '#67e8f9',
+  Bound: '#f472b6',
 };
 
 const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:8000';
@@ -133,11 +157,26 @@ function App() {
     return best;
   }, [frames]);
 
-  // Transform motion_per_second to chart data: { second, Advancing, Retreating, ... } with 0 for missing
+  // Transform legacy_motion_per_second to chart data (Advancing, Retreating, Enclosing, etc.)
+  const legacyChartData = useMemo(() => {
+    const lmps = analysis?.legacy_motion_per_second;
+    if (!lmps?.length) return [];
+    const types = ['Advancing', 'Retreating', 'Enclosing', 'Spreading', 'Directing', 'Indirecting', 'Neutral'];
+    return lmps.map((row) => {
+      const point = { second: row.second };
+      types.forEach((t) => { point[t] = 0; });
+      row.motions?.forEach((m) => {
+        if (types.includes(m.motion_type)) point[m.motion_type] = m.confidence;
+      });
+      return point;
+    });
+  }, [analysis?.legacy_motion_per_second]);
+
+  // Transform motion_per_second to chart data: only 6 types from Authority Coding Sheet
   const motionChartData = useMemo(() => {
     const mps = analysis?.motion_per_second;
     if (!mps?.length) return [];
-    const types = ['Advancing', 'Retreating', 'Enclosing', 'Spreading', 'Directing', 'Indirecting', 'Neutral'];
+    const types = MOTION_TYPES_AUTHORITY;
     return mps.map((row) => {
       const point = { second: row.second };
       types.forEach((t) => { point[t] = 0; });
@@ -148,9 +187,24 @@ function App() {
     });
   }, [analysis?.motion_per_second]);
 
+  // Transform effort_per_second to chart data: { second, Light, Strong, ... } with 0 for missing
+  const effortChartData = useMemo(() => {
+    const eps = analysis?.effort_per_second;
+    if (!eps?.length) return [];
+    const types = ['Light', 'Strong', 'Sustained', 'Sudden', 'Direct', 'Indirect', 'Free', 'Bound'];
+    return eps.map((row) => {
+      const point = { second: row.second };
+      types.forEach((t) => { point[t] = 0; });
+      row.efforts?.forEach((e) => {
+        if (types.includes(e.effort_type)) point[e.effort_type] = e.confidence;
+      });
+      return point;
+    });
+  }, [analysis?.effort_per_second]);
+
   // Playhead sync: ~30fps RAF loop, syncs from whichever video is playing
   useEffect(() => {
-    if (status !== 'ready' || !motionChartData.length) return;
+    if (status !== 'ready' || (!legacyChartData.length && !motionChartData.length && !effortChartData.length)) return;
     const videos = [overlayVideoRef.current].filter(Boolean);
     if (videos.length === 0) return;
 
@@ -162,7 +216,7 @@ function App() {
     };
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
-  }, [status, motionChartData.length]);
+  }, [status, legacyChartData.length, motionChartData.length, effortChartData.length]);
 
   useEffect(() => {
     const video = overlayVideoRef.current;
@@ -276,9 +330,10 @@ function App() {
     formData.append('file', selectedFile);
 
     const startTime = Date.now();
+    // Progress reaches 90% over ~5 min so it doesn't stall while backend processes (MediaPipe is slow)
     progressIntervalRef.current = setInterval(() => {
       const elapsed = (Date.now() - startTime) / 1000;
-      setUploadProgress(Math.min(90, (elapsed / 60) * 90));
+      setUploadProgress(Math.min(90, (elapsed / 300) * 90));
     }, 150);
 
     try {
@@ -357,7 +412,7 @@ function App() {
 
       <header className="mb-10 relative z-10">
         <h1 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-blue-200 via-blue-100 to-indigo-200 bg-clip-text text-transparent drop-shadow-sm">
-          AI Person Reader
+          AI People Reader
         </h1>
         <p className="text-slate-400 text-sm mt-2">
           Upload a video, preview it, then create the pose overlay
@@ -485,11 +540,73 @@ function App() {
             )}
           </div>
 
-          {/* Motion chart - shown after processing */}
+          {/* Charts - shown after processing */}
           {status === 'ready' && frames.length > 0 && (
-            <div className="space-y-4">
+            <div className="space-y-6">
 
-              {/* Motion confidence time series with playhead */}
+              {/* Top: Legacy motion (Advancing, Retreating, Enclosing, Spreading, Directing, Indirecting) */}
+              {legacyChartData.length > 0 && (
+                <div className="space-y-2">
+                  <h2 className="text-sm font-medium text-slate-400">Shape & direction confidence over time</h2>
+                  <div className="relative rounded-2xl p-4 h-64 bg-black">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={legacyChartData} margin={{ top: 5, right: 30, left: 55, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" opacity={0.4} />
+                        <XAxis
+                          dataKey="second"
+                          tickFormatter={(v) => `${v}s`}
+                          stroke="#94a3b8"
+                          tick={{ fill: '#94a3b8', fontSize: 11 }}
+                        />
+                        <YAxis
+                          domain={[0, 100]}
+                          tickFormatter={(v) => `${v}%`}
+                          stroke="#94a3b8"
+                          tick={{ fill: '#94a3b8', fontSize: 11 }}
+                        />
+                        <Tooltip
+                          contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: 8 }}
+                          labelFormatter={(v) => `${v}s`}
+                          formatter={(value, name) => [`${value}%`, name]}
+                        />
+                        <Legend wrapperStyle={{ fontSize: 11 }} />
+                        {Object.keys(LEGACY_MOTION_COLORS).map((key) => (
+                          <Line
+                            key={key}
+                            type="monotone"
+                            dataKey={key}
+                            stroke={LEGACY_MOTION_COLORS[key]}
+                            strokeWidth={2}
+                            dot={false}
+                            connectNulls
+                          />
+                        ))}
+                      </LineChart>
+                    </ResponsiveContainer>
+                    {/* Sliding playhead */}
+                    {(() => {
+                      const maxSec = legacyChartData.length ? legacyChartData[legacyChartData.length - 1].second : 1;
+                      const pct = maxSec > 0 ? Math.min(1, Math.max(0, videoCurrentTime / maxSec)) : 0;
+                      return (
+                        <div className="absolute top-4 bottom-4 left-4 right-4 pointer-events-none">
+                          <div
+                            className="absolute top-0 bottom-0 -ml-px"
+                            style={{
+                              left: `calc(115px + (100% - 130px) * ${pct})`,
+                              width: 5,
+                              backgroundColor: '#ef4444',
+                              borderLeft: 'none',
+                              boxShadow: '0 0 8px #ef4444',
+                            }}
+                          />
+                        </div>
+                      );
+                    })()}
+                  </div>
+                </div>
+              )}
+
+              {/* Middle: Motion confidence over time (CSV types) */}
               {motionChartData.length > 0 && (
                 <div className="space-y-2">
                   <h2 className="text-sm font-medium text-slate-400">Motion confidence over time</h2>
@@ -528,9 +645,71 @@ function App() {
                         ))}
                       </LineChart>
                     </ResponsiveContainer>
-                    {/* Sliding playhead - aligned with chart plot (left ~70px for Y-axis labels) */}
+                    {/* Sliding playhead */}
                     {(() => {
                       const maxSec = motionChartData.length ? motionChartData[motionChartData.length - 1].second : 1;
+                      const pct = maxSec > 0 ? Math.min(1, Math.max(0, videoCurrentTime / maxSec)) : 0;
+                      return (
+                        <div className="absolute top-4 bottom-4 left-4 right-4 pointer-events-none">
+                          <div
+                            className="absolute top-0 bottom-0 -ml-px"
+                            style={{
+                              left: `calc(115px + (100% - 130px) * ${pct})`,
+                              width: 5,
+                              backgroundColor: '#ef4444',
+                              borderLeft: 'none',
+                              boxShadow: '0 0 8px #ef4444',
+                            }}
+                          />
+                        </div>
+                      );
+                    })()}
+                  </div>
+                </div>
+              )}
+
+              {/* Lower: Effort confidence over time */}
+              {effortChartData.length > 0 && (
+                <div className="space-y-2">
+                  <h2 className="text-sm font-medium text-slate-400">Effort confidence over time</h2>
+                  <div className="relative rounded-2xl p-4 h-64 bg-black">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={effortChartData} margin={{ top: 5, right: 30, left: 55, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" opacity={0.4} />
+                        <XAxis
+                          dataKey="second"
+                          tickFormatter={(v) => `${v}s`}
+                          stroke="#94a3b8"
+                          tick={{ fill: '#94a3b8', fontSize: 11 }}
+                        />
+                        <YAxis
+                          domain={[0, 100]}
+                          tickFormatter={(v) => `${v}%`}
+                          stroke="#94a3b8"
+                          tick={{ fill: '#94a3b8', fontSize: 11 }}
+                        />
+                        <Tooltip
+                          contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: 8 }}
+                          labelFormatter={(v) => `${v}s`}
+                          formatter={(value, name) => [`${value}%`, name]}
+                        />
+                        <Legend wrapperStyle={{ fontSize: 11 }} />
+                        {Object.keys(EFFORT_COLORS).map((key) => (
+                          <Line
+                            key={key}
+                            type="monotone"
+                            dataKey={key}
+                            stroke={EFFORT_COLORS[key]}
+                            strokeWidth={2}
+                            dot={false}
+                            connectNulls
+                          />
+                        ))}
+                      </LineChart>
+                    </ResponsiveContainer>
+                    {/* Sliding playhead */}
+                    {(() => {
+                      const maxSec = effortChartData.length ? effortChartData[effortChartData.length - 1].second : 1;
                       const pct = maxSec > 0 ? Math.min(1, Math.max(0, videoCurrentTime / maxSec)) : 0;
                       return (
                         <div className="absolute top-4 bottom-4 left-4 right-4 pointer-events-none">

@@ -243,12 +243,12 @@ def _detect_motion_counts_for_frames(frames: List[dict]) -> Dict[str, int]:
     ind_exp = p.get("indirecting_min_expansion", 1.0)
     ind_lateral = p.get("indirecting_lateral_threshold", 0.001)
     sus_min = p.get("sustained_vel_min", 0.02)
-    sus_max = p.get("sustained_vel_max", 0.09)  # Tuned: 0.08 excluded Advancing at boundary
+    sus_max = p.get("sustained_vel_max", 0.07)  # Keep below is_sudden (0.08) for clean Pressing vs Punching
 
+    # Complete_Effort_Action_Motion_Descriptions.csv: Gliding, Floating, Punching, Dabbing, Flicking, Slashing, Wringing, Pressing
     counts = {
-        "Directing": 0, "Enclosing": 0, "Punching": 0, "Spreading": 0,
-        "Pressing": 0, "Dabbing": 0, "Indirecting": 0, "Gliding": 0,
-        "Flicking": 0, "Advancing": 0, "Retreating": 0,
+        "Gliding": 0, "Floating": 0, "Punching": 0, "Dabbing": 0,
+        "Flicking": 0, "Slashing": 0, "Wringing": 0, "Pressing": 0,
     }
     for i in range(1, len(frames)):
         curr = frames[i].get("landmarks", [])
@@ -318,40 +318,117 @@ def _detect_motion_counts_for_frames(frames: List[dict]) -> Dict[str, int]:
         up = (lw["y"] - plw["y"]) < -0.01 or (rw["y"] - prw["y"]) < -0.01
         down = (lw["y"] - plw["y"]) > 0.01 or (rw["y"] - prw["y"]) > 0.01
 
-        is_sudden = avg_vel > 0.08
-        is_sustained = sus_min < avg_vel <= sus_max
-        is_strong = body_expansion > 1.2 or hands_above
-        is_light = body_expansion < 0.8
+        # Tuned for Authority Coding Sheet (professor's coding)
+        is_sudden = avg_vel > 0.08  # Sudden: Punching, Dabbing, Flicking, Slashing
+        is_sustained = sus_min < avg_vel <= sus_max  # Sustained: Pressing, Gliding, Floating
+        is_strong = body_expansion > 1.15 or hands_above
+        is_light = body_expansion < 0.9
 
-        if hands_forward and is_sustained and forward:
-            counts["Directing"] += 1
-        # Enclosing: arms close together OR expansion decreasing (contracting)
-        if (body_expansion < enc_max or expansion_delta < -0.02) and avg_vel > enc_min_vel:
-            counts["Enclosing"] += 1
-        if is_sudden and is_strong and forward:
-            counts["Punching"] += 1
-        # Spreading: arms wide OR expansion increasing (expanding)
-        if (body_expansion > spread_exp or expansion_delta > 0.02) and avg_vel > spread_min_vel:
-            counts["Spreading"] += 1
-        if is_sustained and is_strong and down:
-            counts["Pressing"] += 1
-        if is_sudden and is_light and avg_vel > 0.05:
-            counts["Dabbing"] += 1
-        # Indirecting: hands to sides OR significant lateral movement (curved path)
         lateral_vel = (abs(lw["x"] - plw["x"]) + abs(rw["x"] - prw["x"])) / 2
-        has_lateral = lateral_vel > ind_lateral
-        if (not hands_forward or has_lateral) and avg_vel > ind_vel and body_expansion > ind_exp:
-            counts["Indirecting"] += 1
-        if is_sustained and is_light and up:
-            counts["Gliding"] += 1
+        has_lateral = lateral_vel > 0.025  # Stricter for Slashing (professor codes rarely)
+        # Upward vs forward: more upward = Floating, more forward = Gliding
+        hand_y_d = (lw["y"] - plw["y"] + rw["y"] - prw["y"]) / 2
+        hand_z_d = (lz_d + rz_d) / 2
+        more_upward = hand_y_d < -0.005 and abs(hand_y_d) > abs(hand_z_d)
+
+        # Punching: forceful forward/downward (Sudden, Strong)
+        if is_sudden and is_strong and (forward or down):
+            counts["Punching"] += 1
+        # Dabbing: short, precise (Sudden, Light)
+        if is_sudden and is_light and avg_vel > 0.04:
+            counts["Dabbing"] += 1
+        # Flicking: outward with rebound
         if is_sudden and is_light and not forward:
             counts["Flicking"] += 1
-        # Advancing: wrist moving forward OR body stepping forward (feet/hip/head toward camera)
-        wrist_advancing = forward and avg_vel > adv_vel and is_sustained
-        body_advancing = body_forward and (
-            0.01 < hip_vel <= 0.12 or 0.01 < nose_vel <= 0.12 or 0.01 < ankle_vel <= 0.12
-        )
-        if wrist_advancing or body_advancing:
+        # Pressing: downward or forward, sustained (Authority Coding Sheet)
+        if is_sustained and is_strong and (down or forward):
+            counts["Pressing"] += 1
+        # Gliding: smooth, sustained, light, often forward
+        if is_sustained and is_light and (forward or (up and not more_upward)):
+            counts["Gliding"] += 1
+        # Floating: light, upward, buoyant
+        if is_sustained and is_light and up and more_upward:
+            counts["Floating"] += 1
+        # Slashing: diagonal/horizontal sweeping - lateral must dominate (not primarily forward)
+        if is_sudden and has_lateral and body_expansion > 1.2 and not forward:
+            counts["Slashing"] += 1
+        # Wringing: twisting, contracting (arms close or spiral)
+        if (body_expansion < enc_max or expansion_delta < -0.02) and avg_vel > enc_min_vel:
+            counts["Wringing"] += 1
+
+    return counts
+
+
+# Legacy motion types (original: Advancing, Retreating, Enclosing, Spreading, Directing, Indirecting)
+LEGACY_MOTION_TYPES = ["Advancing", "Retreating", "Enclosing", "Spreading", "Directing", "Indirecting"]
+
+
+def _detect_legacy_motion_counts_for_frames(frames: List[dict]) -> Dict[str, int]:
+    """Count legacy motion type occurrences (Advancing, Retreating, Enclosing, Spreading, Directing, Indirecting)."""
+    p = TUNE_PARAMS
+    enc_max = p.get("enclosing_max_expansion", ENCLOSING_MAX_EXPANSION)
+    enc_min_vel = p.get("enclosing_min_velocity", ENCLOSING_MIN_VELOCITY)
+    spread_exp = p.get("spreading_expansion_threshold", SPREADING_BODY_EXPANSION_THRESHOLD)
+    spread_min_vel = p.get("spreading_min_velocity", SPREADING_MIN_VELOCITY)
+    fwd_z = p.get("forward_z_threshold", -0.03)
+    bwd_z = p.get("backward_z_threshold", 0.02)
+    adv_vel = p.get("advancing_min_velocity", 0.05)
+    ret_vel = p.get("retreating_min_velocity", 0.025)
+    ind_vel = p.get("indirecting_min_velocity", 0.04)
+    ind_exp = p.get("indirecting_min_expansion", 1.0)
+    ind_lateral = p.get("indirecting_lateral_threshold", 0.001)
+    sus_min = p.get("sustained_vel_min", 0.02)
+    sus_max = p.get("sustained_vel_max", 0.09)
+
+    counts = {t: 0 for t in LEGACY_MOTION_TYPES}
+    for i in range(1, len(frames)):
+        curr = frames[i].get("landmarks", [])
+        prev = frames[i - 1].get("landmarks", [])
+        if len(curr) < 17 or len(prev) < 17:
+            continue
+
+        lw, rw = curr[LEFT_WRIST], curr[RIGHT_WRIST]
+        plw, prw = prev[LEFT_WRIST], prev[RIGHT_WRIST]
+        ls, rs = curr[LEFT_SHOULDER], curr[RIGHT_SHOULDER]
+        if not all(_visible(p) for p in [lw, rw, plw, prw, ls, rs]):
+            continue
+
+        lw_vel = math.sqrt((lw["x"] - plw["x"]) ** 2 + (lw["y"] - plw["y"]) ** 2 + (lw.get("z", 0) - plw.get("z", 0)) ** 2)
+        rw_vel = math.sqrt((rw["x"] - prw["x"]) ** 2 + (rw["y"] - prw["y"]) ** 2 + (rw.get("z", 0) - prw.get("z", 0)) ** 2)
+        avg_vel = (lw_vel + rw_vel) / 2
+
+        wrist_dist = abs(lw["x"] - rw["x"])
+        shoulder_width = max(abs(ls["x"] - rs["x"]), 0.1)
+        body_expansion = wrist_dist / shoulder_width
+
+        pwrist = abs(plw["x"] - prw["x"])
+        pshoulder = max(abs(prev[LEFT_SHOULDER]["x"] - prev[RIGHT_SHOULDER]["x"]), 0.1)
+        prev_expansion = pwrist / pshoulder
+        expansion_delta = body_expansion - prev_expansion
+
+        avg_hand_z = (lw.get("z", 0) + rw.get("z", 0)) / 2
+        avg_sh_z = (ls.get("z", 0) + rs.get("z", 0)) / 2
+        hands_forward = avg_hand_z < avg_sh_z
+
+        lz_d = lw.get("z", 0) - plw.get("z", 0)
+        rz_d = rw.get("z", 0) - prw.get("z", 0)
+        avg_z_d = (lz_d + rz_d) / 2
+        forward = avg_z_d < fwd_z
+        backward = avg_z_d > bwd_z
+
+        is_sustained = sus_min < avg_vel <= sus_max
+        lateral_vel = (abs(lw["x"] - plw["x"]) + abs(rw["x"] - prw["x"])) / 2
+        has_lateral = lateral_vel > ind_lateral
+
+        if (body_expansion < enc_max or expansion_delta < -0.02) and avg_vel > enc_min_vel:
+            counts["Enclosing"] += 1
+        if (body_expansion > spread_exp or expansion_delta > 0.02) and avg_vel > spread_min_vel:
+            counts["Spreading"] += 1
+        if hands_forward and is_sustained and forward:
+            counts["Directing"] += 1
+        if (not hands_forward or has_lateral) and avg_vel > ind_vel and body_expansion > ind_exp:
+            counts["Indirecting"] += 1
+        if forward and avg_vel > adv_vel and is_sustained:
             counts["Advancing"] += 1
         if backward and avg_vel > ret_vel and is_sustained:
             counts["Retreating"] += 1
@@ -359,17 +436,55 @@ def _detect_motion_counts_for_frames(frames: List[dict]) -> Dict[str, int]:
     return counts
 
 
-# Motion types from Motion_Contrast_Chart_for_AI_Training - used for per-second classification
-MOTION_TYPES_CSV = ["Advancing", "Retreating", "Enclosing", "Spreading", "Directing", "Indirecting"]
+# Motion types from Complete_Effort_Action_Motion_Descriptions.csv
+MOTION_TYPES_CSV = ["Gliding", "Floating", "Punching", "Dabbing", "Flicking", "Slashing", "Wringing", "Pressing"]
 
-# Map other detected types to closest CSV type for reporting
-MOTION_TYPE_MAP = {
-    "Punching": "Directing",
-    "Pressing": "Directing",
-    "Dabbing": "Indirecting",
-    "Gliding": "Indirecting",
-    "Flicking": "Indirecting",
-}
+
+def analyze_legacy_motion_per_second(frames: List[dict]) -> List[Dict[str, Any]]:
+    """
+    Legacy motion types per second: Advancing, Retreating, Enclosing, Spreading, Directing, Indirecting.
+    Returns list of {second, motions: [{motion_type, count, confidence}]} per second.
+    """
+    if len(frames) < 2:
+        return []
+
+    by_second: Dict[int, List[dict]] = defaultdict(list)
+    for f in frames:
+        ts = f.get("timestamp", 0)
+        sec = int(ts)
+        by_second[sec].append(f)
+
+    result = []
+    for sec in sorted(by_second.keys()):
+        window = by_second[sec]
+        if len(window) < 2:
+            result.append({"second": sec, "motions": []})
+            continue
+
+        counts = _detect_legacy_motion_counts_for_frames(window)
+        n_frames = len(window) - 1
+        if n_frames <= 0:
+            result.append({"second": sec, "motions": [{"motion_type": "Neutral", "count": 0, "confidence": 0}]})
+            continue
+
+        aggregated = defaultdict(int)
+        for motion_type, count in counts.items():
+            if count <= 0:
+                continue
+            aggregated[motion_type] += count
+
+        if not aggregated:
+            result.append({"second": sec, "motions": [{"motion_type": "Neutral", "count": 0, "confidence": 0}]})
+            continue
+
+        motion_list = []
+        for motion_type, count in aggregated.items():
+            confidence = round(count / n_frames * 100, 1)
+            motion_list.append({"motion_type": motion_type, "count": count, "confidence": confidence})
+        motion_list.sort(key=lambda x: -x["count"])
+        result.append({"second": sec, "motions": motion_list})
+
+    return result
 
 
 def analyze_motion_per_second(frames: List[dict]) -> List[Dict[str, Any]]:
@@ -404,12 +519,11 @@ def analyze_motion_per_second(frames: List[dict]) -> List[Dict[str, Any]]:
             })
             continue
 
-        # Aggregate by mapped type (merge Punching/Pressing -> Directing, etc.), then build list
+        # Aggregate by motion type (already using CSV types)
         aggregated = defaultdict(int)
-        for raw_type, count in counts.items():
+        for motion_type, count in counts.items():
             if count <= 0:
                 continue
-            motion_type = MOTION_TYPE_MAP.get(raw_type, raw_type) if raw_type not in MOTION_TYPES_CSV else raw_type
             aggregated[motion_type] += count
 
         if not aggregated:
@@ -431,6 +545,55 @@ def analyze_motion_per_second(frames: List[dict]) -> List[Dict[str, Any]]:
     return result
 
 
+# Laban Effort factors derived from Complete_Effort_Action_Motion_Descriptions.csv
+# Weight: Light (Gliding, Floating, Dabbing, Flicking) | Strong (Punching, Slashing, Wringing, Pressing)
+# Time: Sustained (Gliding, Floating, Wringing, Pressing) | Sudden (Punching, Dabbing, Flicking, Slashing)
+# Space: Direct (Gliding, Punching, Dabbing, Pressing) | Indirect (Floating, Flicking, Slashing, Wringing)
+# Flow: Free (Gliding, Floating, Flicking) | Bound (Punching, Dabbing, Slashing, Wringing, Pressing)
+EFFORT_LIGHT = {"Gliding", "Floating", "Dabbing", "Flicking"}
+EFFORT_STRONG = {"Punching", "Slashing", "Wringing", "Pressing"}
+EFFORT_SUSTAINED = {"Gliding", "Floating", "Wringing", "Pressing"}
+EFFORT_SUDDEN = {"Punching", "Dabbing", "Flicking", "Slashing"}
+EFFORT_DIRECT = {"Gliding", "Punching", "Dabbing", "Pressing"}
+EFFORT_INDIRECT = {"Floating", "Flicking", "Slashing", "Wringing"}
+EFFORT_FREE = {"Gliding", "Floating", "Flicking"}
+EFFORT_BOUND = {"Punching", "Dabbing", "Slashing", "Wringing", "Pressing"}
+
+
+def _effort_from_motions(motions: List[Dict[str, Any]]) -> Dict[str, float]:
+    """Derive effort factor confidences (0-100) from motion list."""
+    conf = {m["motion_type"]: m["confidence"] for m in (motions or []) if m.get("motion_type") != "Neutral"}
+    out: Dict[str, float] = {}
+    for name, motion_set in [
+        ("Light", EFFORT_LIGHT),
+        ("Strong", EFFORT_STRONG),
+        ("Sustained", EFFORT_SUSTAINED),
+        ("Sudden", EFFORT_SUDDEN),
+        ("Direct", EFFORT_DIRECT),
+        ("Indirect", EFFORT_INDIRECT),
+        ("Free", EFFORT_FREE),
+        ("Bound", EFFORT_BOUND),
+    ]:
+        total = sum(conf.get(m, 0) for m in motion_set)
+        out[name] = round(min(100.0, total), 1)
+    return out
+
+
+def analyze_effort_per_second(motion_per_second: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Derive effort factor confidence over time from motion_per_second.
+    Returns list of {second, efforts: [{effort_type, confidence}]} per second.
+    """
+    result = []
+    for row in motion_per_second:
+        efforts = _effort_from_motions(row.get("motions", []))
+        result.append({
+            "second": row["second"],
+            "efforts": [{"effort_type": k, "confidence": v} for k, v in efforts.items()],
+        })
+    return result
+
+
 def analyze_gesture_effort(frames: List[dict]) -> Dict[str, Any]:
     """Matches report_core.analyze_video_mediapipe effort/shape detection and scoring."""
     if len(frames) < 2:
@@ -440,12 +603,8 @@ def analyze_gesture_effort(frames: List[dict]) -> Dict[str, Any]:
             "engaging_pos": 257, "convince_pos": 271, "authority_pos": 254,
         }
 
-    effort_counts = {
-        "Directing": 0, "Enclosing": 0, "Punching": 0, "Spreading": 0,
-        "Pressing": 0, "Dabbing": 0, "Indirecting": 0, "Gliding": 0,
-        "Flicking": 0, "Advancing": 0, "Retreating": 0,
-    }
-    shape_counts = {"Directing": 0, "Enclosing": 0, "Spreading": 0, "Indirecting": 0, "Advancing": 0, "Retreating": 0}
+    effort_counts = {t: 0 for t in MOTION_TYPES_CSV}
+    shape_counts = {t: 0 for t in MOTION_TYPES_CSV}
 
     for i in range(1, len(frames)):
         curr = frames[i].get("landmarks", [])
@@ -490,34 +649,32 @@ def analyze_gesture_effort(frames: List[dict]) -> Dict[str, Any]:
         is_strong = body_expansion > 1.2 or hands_above
         is_light = body_expansion < 0.8
 
-        if hands_forward and is_sustained and forward:
-            effort_counts["Directing"] += 1
-            shape_counts["Directing"] += 1
-        if body_expansion < ENCLOSING_MAX_EXPANSION and avg_vel > ENCLOSING_MIN_VELOCITY:
-            effort_counts["Enclosing"] += 1
-            shape_counts["Enclosing"] += 1
+        lateral_vel = (abs(lw["x"] - plw["x"]) + abs(rw["x"] - prw["x"])) / 2
+        has_lateral = lateral_vel > 0.001
+        hand_y_d = (lw["y"] - plw["y"] + rw["y"] - prw["y"]) / 2
+        more_upward = hand_y_d < -0.005 and abs(hand_y_d) > abs(avg_z_d)
+
         if is_sudden and is_strong and forward:
             effort_counts["Punching"] += 1
-        if body_expansion > SPREADING_BODY_EXPANSION_THRESHOLD and avg_vel > SPREADING_MIN_VELOCITY:
-            effort_counts["Spreading"] += 1
-            shape_counts["Spreading"] += 1
-        if is_sustained and is_strong and down:
-            effort_counts["Pressing"] += 1
         if is_sudden and is_light and avg_vel > 0.05:
             effort_counts["Dabbing"] += 1
-        if not hands_forward and avg_vel > 0.04 and body_expansion > 1.0:
-            effort_counts["Indirecting"] += 1
-            shape_counts["Indirecting"] += 1
-        if is_sustained and is_light and up:
-            effort_counts["Gliding"] += 1
         if is_sudden and is_light and not forward:
             effort_counts["Flicking"] += 1
-        if forward and avg_vel > 0.06 and is_sustained:
-            effort_counts["Advancing"] += 1
-            shape_counts["Advancing"] += 1
-        if backward and avg_vel > 0.07 and is_sustained:
-            effort_counts["Retreating"] += 1
-            shape_counts["Retreating"] += 1
+        if is_sustained and is_strong and down:
+            effort_counts["Pressing"] += 1
+            shape_counts["Pressing"] += 1
+        if is_sustained and is_light and up and not more_upward:
+            effort_counts["Gliding"] += 1
+            shape_counts["Gliding"] += 1
+        if is_sustained and is_light and up and more_upward:
+            effort_counts["Floating"] += 1
+            shape_counts["Floating"] += 1
+        if is_sudden and has_lateral and body_expansion > 1.2:
+            effort_counts["Slashing"] += 1
+            shape_counts["Slashing"] += 1
+        if body_expansion < ENCLOSING_MAX_EXPANSION and avg_vel > ENCLOSING_MIN_VELOCITY:
+            effort_counts["Wringing"] += 1
+            shape_counts["Wringing"] += 1
 
     total_det = max(1, sum(effort_counts.values()))
     effort_detection = {k: round(v / total_det * 100, 1) for k, v in effort_counts.items()}
@@ -532,20 +689,18 @@ def analyze_gesture_effort(frames: List[dict]) -> Dict[str, Any]:
     variety_floor = max(2, int(max(1, analyzed) * 0.03))
     variety_count = sum(1 for v in effort_counts.values() if v >= variety_floor)
     monotony_penalty = max(0.0, (dominant_share - 0.35) * 8.0)
-    variety_factor = max(0.85, min(1.20, 0.85 + (variety_count / 11.0) * 0.35))
+    variety_factor = max(0.85, min(1.20, 0.85 + (variety_count / 8.0) * 0.35))
 
     total_f = max(1, analyzed)
     engaging_activity = (
-        effort_counts.get("Spreading", 0) + effort_counts.get("Enclosing", 0)
-        + effort_counts.get("Gliding", 0) + effort_counts.get("Indirecting", 0)
+        effort_counts.get("Slashing", 0) + effort_counts.get("Wringing", 0)
+        + effort_counts.get("Gliding", 0) + effort_counts.get("Flicking", 0) + effort_counts.get("Floating", 0)
     ) / total_f
     confidence_activity = (
-        effort_counts.get("Directing", 0) + effort_counts.get("Punching", 0)
-        + effort_counts.get("Advancing", 0) + effort_counts.get("Pressing", 0)
+        effort_counts.get("Punching", 0) + effort_counts.get("Pressing", 0)
     ) / total_f
     authority_activity = (
         effort_counts.get("Pressing", 0) + effort_counts.get("Punching", 0)
-        + effort_counts.get("Directing", 0) + effort_counts.get("Advancing", 0)
     ) / total_f
 
     engaging_boost = max(0.85, min(1.35, 0.85 + engaging_activity * 1.60))
@@ -553,33 +708,25 @@ def analyze_gesture_effort(frames: List[dict]) -> Dict[str, Any]:
     authority_boost = max(0.85, min(1.35, 0.85 + authority_activity * 1.50))
 
     engaging_raw = (
-        effort_detection.get("Spreading", 0) * 0.34 + effort_detection.get("Enclosing", 0) * 0.26
-        + effort_detection.get("Gliding", 0) * 0.22 + effort_detection.get("Indirecting", 0) * 0.18
-        - effort_detection.get("Punching", 0) * 0.12 - effort_detection.get("Retreating", 0) * 0.10
+        effort_detection.get("Slashing", 0) * 0.34 + effort_detection.get("Wringing", 0) * 0.26
+        + effort_detection.get("Gliding", 0) * 0.22 + effort_detection.get("Flicking", 0) * 0.18
+        - effort_detection.get("Punching", 0) * 0.12
     )
     confidence_raw = (
-        effort_detection.get("Directing", 0) * 0.36 + effort_detection.get("Punching", 0) * 0.24
-        + effort_detection.get("Advancing", 0) * 0.24 + effort_detection.get("Pressing", 0) * 0.16
-        - effort_detection.get("Retreating", 0) * 0.18 - effort_detection.get("Indirecting", 0) * 0.08
+        effort_detection.get("Punching", 0) * 0.50 + effort_detection.get("Pressing", 0) * 0.50
+        - effort_detection.get("Flicking", 0) * 0.08
     )
     authority_raw = (
-        effort_detection.get("Pressing", 0) * 0.34 + effort_detection.get("Punching", 0) * 0.26
-        + effort_detection.get("Directing", 0) * 0.24 + effort_detection.get("Advancing", 0) * 0.16
-        - effort_detection.get("Flicking", 0) * 0.18 - effort_detection.get("Retreating", 0) * 0.12
+        effort_detection.get("Pressing", 0) * 0.50 + effort_detection.get("Punching", 0) * 0.50
+        - effort_detection.get("Flicking", 0) * 0.18
     )
 
     engaging_shape = (
-        shape_detection.get("Spreading", 0) * 0.45 + shape_detection.get("Enclosing", 0) * 0.35
-        + shape_detection.get("Indirecting", 0) * 0.20
+        shape_detection.get("Slashing", 0) * 0.45 + shape_detection.get("Wringing", 0) * 0.35
+        + shape_detection.get("Flicking", 0) * 0.20
     )
-    confidence_shape = (
-        shape_detection.get("Directing", 0) * 0.60 + shape_detection.get("Advancing", 0) * 0.35
-        - shape_detection.get("Retreating", 0) * 0.25
-    )
-    authority_shape = (
-        shape_detection.get("Directing", 0) * 0.55 + shape_detection.get("Advancing", 0) * 0.30
-        - shape_detection.get("Retreating", 0) * 0.40
-    )
+    confidence_shape = shape_detection.get("Pressing", 0) * 0.60 + shape_detection.get("Punching", 0) * 0.40
+    authority_shape = shape_detection.get("Pressing", 0) * 0.55 + shape_detection.get("Punching", 0) * 0.45
 
     engaging_raw = max(0.0, (engaging_raw * engaging_boost + engaging_shape * 0.22) * variety_factor - monotony_penalty * 0.90)
     confidence_raw = max(0.0, (confidence_raw * confidence_boost + confidence_shape * 0.25) * variety_factor - monotony_penalty * 1.00)
@@ -805,7 +952,9 @@ def run_analysis(frames: List[dict]) -> Dict[str, Any]:
     """Run full analysis matching report_core + report_worker format."""
     first = analyze_first_impression(frames)
     effort = analyze_gesture_effort(frames)
+    legacy_motion_per_second = analyze_legacy_motion_per_second(frames)
     motion_per_second = analyze_motion_per_second(frames)
+    effort_per_second = analyze_effort_per_second(motion_per_second)
 
     total = int(effort.get("total_indicators") or 1370)
     engaging_score = int(effort.get("engaging_score") or 4)
@@ -883,5 +1032,7 @@ def run_analysis(frames: List[dict]) -> Dict[str, Any]:
         },
         "effort_detection": effort.get("effort_detection", {}),
         "shape_detection": effort.get("shape_detection", {}),
+        "legacy_motion_per_second": legacy_motion_per_second,
         "motion_per_second": motion_per_second,
+        "effort_per_second": effort_per_second,
     }
