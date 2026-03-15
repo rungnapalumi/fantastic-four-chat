@@ -19,6 +19,7 @@ import numpy as np
 from fastapi import FastAPI, File, UploadFile, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from mediapipe.tasks import python as mp_tasks
 from mediapipe.tasks.python import vision
 from mediapipe.tasks.python.vision import pose_landmarker
@@ -290,6 +291,32 @@ def serve_video(job_id: str):
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# Serve React frontend when deployed together (backend/static from build)
+_STATIC_DIR = Path(__file__).resolve().parent / "static"
+if _STATIC_DIR.exists():
+    _static_assets = _STATIC_DIR / "static"
+    if _static_assets.exists():
+        app.mount("/static", StaticFiles(directory=_static_assets), name="static")
+
+    @app.get("/")
+    def serve_app():
+        index_path = _STATIC_DIR / "index.html"
+        if index_path.exists():
+            return FileResponse(index_path)
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    @app.get("/{path:path}")
+    def serve_app_path(path: str):
+        """Catch-all for React client-side routing."""
+        full_path = _STATIC_DIR / path
+        if full_path.exists() and full_path.is_file():
+            return FileResponse(full_path)
+        index_path = _STATIC_DIR / "index.html"
+        if index_path.exists():
+            return FileResponse(index_path)
+        raise HTTPException(status_code=404, detail="Not Found")
 
 
 if __name__ == "__main__":

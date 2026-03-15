@@ -129,11 +129,13 @@ Render has two parts: a **Web Service** (backend) and a **Static Site** (fronten
    - **Build:** Render uses the `Dockerfile` in `backend/`. No extra build command.
    - **Start:** Handled by the Dockerfile.
 
-**Option B: Python (project root)**
+**Option B: Python + React (project root, single URL)**
 
-If using the project root (no Root Directory set):
-- **Build Command:** `pip install -r requirements.txt`
+If using the project root (no Root Directory set), serve both frontend and backend from one URL:
+- **Build Command:** `bash build_for_render.sh`
 - **Start Command:** `python run_backend.py`
+
+This builds the React app and serves it from the backend at `/`.
 4. **Environment Variables** (optional for now):
    - `ALLOWED_ORIGINS` = `https://your-frontend.onrender.com` (add this after you create the static site)
 5. Click **Create Web Service**. Wait for the first deploy.

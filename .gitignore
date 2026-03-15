@@ -19,6 +19,9 @@ backend/venv/
 # debug skeleton cache (local dev only)
 backend/debug_skeleton_cache/
 
+# React build output (created during Render deploy)
+backend/static/
+
 # large video files (use sample or upload separately)
 public/*.mp4
 
