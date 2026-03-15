@@ -117,6 +117,8 @@ Render has two parts: a **Web Service** (backend) and a **Static Site** (fronten
 
 ### Step 1: Deploy the Backend (Web Service)
 
+**Option A: Docker (recommended, includes FFmpeg)**
+
 1. Go to [Render Dashboard](https://dashboard.render.com/) → **New** → **Web Service**.
 2. Connect your GitHub repo (the one with this project). Use a **private** repo if you prefer—only you need access.
 3. Configure:
@@ -126,6 +128,12 @@ Render has two parts: a **Web Service** (backend) and a **Static Site** (fronten
    - **Runtime:** **Docker** (required for FFmpeg)
    - **Build:** Render uses the `Dockerfile` in `backend/`. No extra build command.
    - **Start:** Handled by the Dockerfile.
+
+**Option B: Python (project root)**
+
+If using the project root (no Root Directory set):
+- **Build Command:** `pip install -r requirements.txt`
+- **Start Command:** `python run_backend.py`
 4. **Environment Variables** (optional for now):
    - `ALLOWED_ORIGINS` = `https://your-frontend.onrender.com` (add this after you create the static site)
 5. Click **Create Web Service**. Wait for the first deploy.
