@@ -2,6 +2,10 @@
 
 # dependencies
 /node_modules
+
+# Python
+__pycache__/
+*.pyc
 /.pnp
 .pnp.js
 
@@ -10,6 +14,12 @@
 
 # production
 /build
+
+# debug skeleton cache (local dev only)
+backend/debug_skeleton_cache/
+
+# large video files (use sample or upload separately)
+public/*.mp4
 
 # misc
 .DS_Store
