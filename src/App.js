@@ -46,6 +46,13 @@ const EFFORT_COLORS = {
   Bound: '#f472b6',
 };
 
+// Movement Combination Summary subgroups (4th graph) - A3, C6 have no required motions
+const SUBGROUP_COLORS = {
+  A1: '#22c55e', A2: '#16a34a', A4: '#15803d', A5: '#166534',
+  C1: '#3b82f6', C2: '#2563eb', C3: '#1d4ed8', C4: '#1e40af', C5: '#1e3a8a', C7: '#60a5fa', C8: '#93c5fd',
+  E1: '#a855f7', E2: '#9333ea', E3: '#7c3aed', E4: '#6d28d9', E5: '#5b21b6', E6: '#8b5cf6', E7: '#a78bfa',
+};
+
 // Empty = same origin (when frontend served from backend)
 const API_BASE = process.env.REACT_APP_API_URL ?? 'http://localhost:8000';
 
@@ -75,6 +82,7 @@ function App() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const progressIntervalRef = useRef(null);
   const [videoCurrentTime, setVideoCurrentTime] = useState(0);
+  const [forceReprocess, setForceReprocess] = useState(false);
 
   const drawSkeleton = useCallback((ctx, landmarks, width, height) => {
     if (!landmarks || landmarks.length === 0) return;
@@ -203,9 +211,24 @@ function App() {
     });
   }, [analysis?.effort_per_second]);
 
+  // Transform subgroup_per_second to chart data (Movement Combination Summary subgroups)
+  const subgroupChartData = useMemo(() => {
+    const sps = analysis?.subgroup_per_second;
+    if (!sps?.length) return [];
+    const types = Object.keys(SUBGROUP_COLORS);
+    return sps.map((row) => {
+      const point = { second: row.second };
+      types.forEach((t) => { point[t] = 0; });
+      row.subgroups?.forEach((s) => {
+        if (types.includes(s.subgroup)) point[s.subgroup] = s.confidence;
+      });
+      return point;
+    });
+  }, [analysis?.subgroup_per_second]);
+
   // Playhead sync: ~30fps RAF loop, syncs from whichever video is playing
   useEffect(() => {
-    if (status !== 'ready' || (!legacyChartData.length && !motionChartData.length && !effortChartData.length)) return;
+    if (status !== 'ready' || (!legacyChartData.length && !motionChartData.length && !effortChartData.length && !subgroupChartData.length)) return;
     const videos = [overlayVideoRef.current].filter(Boolean);
     if (videos.length === 0) return;
 
@@ -217,7 +240,7 @@ function App() {
     };
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
-  }, [status, legacyChartData.length, motionChartData.length, effortChartData.length]);
+  }, [status, legacyChartData.length, motionChartData.length, effortChartData.length, subgroupChartData.length]);
 
   useEffect(() => {
     const video = overlayVideoRef.current;
@@ -338,7 +361,8 @@ function App() {
     }, 150);
 
     try {
-      const res = await fetch(`${API_BASE}/upload`, {
+      const url = `${API_BASE}/upload${forceReprocess ? '?force_reprocess=true' : ''}`;
+      const res = await fetch(url, {
         method: 'POST',
         body: formData,
       });
@@ -365,7 +389,7 @@ function App() {
       setError(e.message || 'Processing failed');
       setStatus('preview');
     }
-  }, [selectedFile]);
+    }, [selectedFile, forceReprocess]);
 
   const reset = () => {
     if (progressIntervalRef.current) {
@@ -483,7 +507,8 @@ function App() {
             </div>
             <div className="space-y-3">
               {status !== 'ready' && (
-                <div className="flex items-center gap-3">
+                <div className="flex flex-col gap-3">
+                  <div className="flex items-center gap-3">
                   <button
                     onClick={createPose}
                     disabled={status === 'uploading'}
@@ -509,6 +534,16 @@ function App() {
                     <Video className="w-4 h-4" />
                     New video
                   </button>
+                  </div>
+                  <label className="flex items-center gap-2 text-sm text-slate-400 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={forceReprocess}
+                      onChange={(e) => setForceReprocess(e.target.checked)}
+                      className="rounded border-slate-600 bg-slate-800 text-blue-500 focus:ring-blue-500"
+                    />
+                    Reprocess (skip cache) — use when backend code changed
+                  </label>
                 </div>
               )}
               {status === 'ready' && (
@@ -540,6 +575,58 @@ function App() {
               <p className="text-slate-500 text-sm">{frames.length} frames • Skeleton overlay</p>
             )}
           </div>
+
+          {/* Movement Combination Summary table */}
+          {status === 'ready' && analysis?.movement_summary && (
+            <div className="space-y-2">
+              <h2 className="text-sm font-medium text-slate-400">Movement combination summary</h2>
+              <div className="rounded-2xl overflow-hidden glass border border-slate-700/50">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-slate-800/80 text-slate-300">
+                      <th className="px-4 py-3 text-left font-medium">Group</th>
+                      <th className="px-4 py-3 text-right">Seconds</th>
+                      <th className="px-4 py-3 text-right">% of video</th>
+                      <th className="px-4 py-3 text-left">Scale</th>
+                    </tr>
+                  </thead>
+                  <tbody className="text-slate-200">
+                    {analysis.movement_summary.groups?.map((g) => (
+                      <tr key={g.name} className="border-t border-slate-700/50 hover:bg-slate-800/40">
+                        <td className="px-4 py-2.5">{g.name}</td>
+                        <td className="px-4 py-2.5 text-right">{g.count} / {g.total_seconds}</td>
+                        <td className="px-4 py-2.5 text-right">{g.percentage}%</td>
+                        <td className="px-4 py-2.5">
+                          <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${
+                            g.scale === 'high' ? 'bg-green-500/20 text-green-300' :
+                            g.scale === 'moderate' ? 'bg-amber-500/20 text-amber-300' :
+                            'bg-slate-500/20 text-slate-400'
+                          }`}>
+                            {g.scale.charAt(0).toUpperCase() + g.scale.slice(1)}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {analysis.movement_summary.subgroups?.length > 0 && (
+                  <div className="px-4 py-2 border-t border-slate-700/50">
+                    <p className="text-slate-400 text-xs mb-1.5">Subgroups by second (count):</p>
+                    <div className="flex flex-wrap gap-2">
+                      {analysis.movement_summary.subgroups.map((s) => (
+                        <span key={s.subgroup} className="text-xs px-2 py-1 rounded bg-slate-700/50 text-slate-300">
+                          {s.subgroup}: {s.count}s
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div className="px-4 py-2 bg-slate-800/60 text-slate-400 text-xs border-t border-slate-700/50">
+                  Video: {analysis.movement_summary.total_seconds}s total • 3 groups (Authority, Confidence, Engaging) • Scale: Low &lt;5%, Moderate 5–10%, High ≥10%
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Charts - shown after processing */}
           {status === 'ready' && frames.length > 0 && (
@@ -711,6 +798,68 @@ function App() {
                     {/* Sliding playhead */}
                     {(() => {
                       const maxSec = effortChartData.length ? effortChartData[effortChartData.length - 1].second : 1;
+                      const pct = maxSec > 0 ? Math.min(1, Math.max(0, videoCurrentTime / maxSec)) : 0;
+                      return (
+                        <div className="absolute top-4 bottom-4 left-4 right-4 pointer-events-none">
+                          <div
+                            className="absolute top-0 bottom-0 -ml-px"
+                            style={{
+                              left: `calc(115px + (100% - 130px) * ${pct})`,
+                              width: 5,
+                              backgroundColor: '#ef4444',
+                              borderLeft: 'none',
+                              boxShadow: '0 0 8px #ef4444',
+                            }}
+                          />
+                        </div>
+                      );
+                    })()}
+                  </div>
+                </div>
+              )}
+
+              {/* 4th: Movement Combination subgroups (from Movement Combination Summary.csv) */}
+              {subgroupChartData.length > 0 && (
+                <div className="space-y-2">
+                  <h2 className="text-sm font-medium text-slate-400">Movement combination subgroups over time</h2>
+                  <div className="relative rounded-2xl p-4 h-64 bg-black">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={subgroupChartData} margin={{ top: 5, right: 30, left: 55, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" opacity={0.4} />
+                        <XAxis
+                          dataKey="second"
+                          tickFormatter={(v) => `${v}s`}
+                          stroke="#94a3b8"
+                          tick={{ fill: '#94a3b8', fontSize: 11 }}
+                        />
+                        <YAxis
+                          domain={[0, 100]}
+                          tickFormatter={(v) => `${v}%`}
+                          stroke="#94a3b8"
+                          tick={{ fill: '#94a3b8', fontSize: 11 }}
+                        />
+                        <Tooltip
+                          contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: 8 }}
+                          labelFormatter={(v) => `${v}s`}
+                          formatter={(value, name) => [`${value}%`, name]}
+                        />
+                        <Legend wrapperStyle={{ fontSize: 11 }} />
+                        {Object.keys(SUBGROUP_COLORS).map((key) => (
+                          <Line
+                            key={key}
+                            type="monotone"
+                            dataKey={key}
+                            stroke={SUBGROUP_COLORS[key]}
+                            strokeWidth={2}
+                            dot={false}
+                            connectNulls
+                          />
+                        ))}
+                      </LineChart>
+                    </ResponsiveContainer>
+                    {/* Sliding playhead */}
+                    {(() => {
+                      const maxSec = subgroupChartData.length ? subgroupChartData[subgroupChartData.length - 1].second : 1;
                       const pct = maxSec > 0 ? Math.min(1, Math.max(0, videoCurrentTime / maxSec)) : 0;
                       return (
                         <div className="absolute top-4 bottom-4 left-4 right-4 pointer-events-none">

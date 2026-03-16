@@ -3,11 +3,17 @@ Pose analysis matching report_core.py exactly.
 Eye contact, uprightness, stance, engagement, confidence, authority.
 """
 
+import csv
 import math
 from collections import defaultdict
+from pathlib import Path
 from typing import List, Dict, Any
 
 import numpy as np
+
+# Project root (parent of backend/)
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_MOVEMENT_COMBO_CSV = _PROJECT_ROOT / "Movement Combination Summary.csv"
 
 # MediaPipe Pose landmark indices
 NOSE = 0
@@ -594,6 +600,197 @@ def analyze_effort_per_second(motion_per_second: List[Dict[str, Any]]) -> List[D
     return result
 
 
+# Movement Combination Summary.csv: subgroups with required motion types
+_COMBO_MOTION_TYPES = [
+    "Pressing", "Punching", "Slashing", "Gliding",
+    "Enclosing", "Spreading", "Directing", "Indirecting", "Advancing", "Retreating",
+]
+
+
+def _load_subgroup_definitions() -> List[Dict[str, Any]]:
+    """Load Movement Combination Summary.csv. Returns [{subgroup, required: [motion_types]}]."""
+    if not _MOVEMENT_COMBO_CSV.exists():
+        return []
+    result = []
+    with open(_MOVEMENT_COMBO_CSV, newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            subgroup = (row.get("Subgroup") or "").strip()
+            if not subgroup:
+                continue
+            required = [
+                m for m in _COMBO_MOTION_TYPES
+                if m in row and str(row.get(m, "")).strip() in ("1", "x", "X")
+            ]
+            result.append({"subgroup": subgroup, "required": required})
+    return result
+
+
+def _merged_motion_confidences(
+    legacy_row: Dict[str, Any],
+    motion_row: Dict[str, Any],
+) -> Dict[str, float]:
+    """Merge legacy + motion confidences for combo types. Returns {motion_type: confidence}."""
+    out: Dict[str, float] = {m: 0.0 for m in _COMBO_MOTION_TYPES}
+    for m in legacy_row.get("motions", []):
+        t = m.get("motion_type")
+        if t in out:
+            out[t] = max(out[t], float(m.get("confidence", 0)))
+    for m in motion_row.get("motions", []):
+        t = m.get("motion_type")
+        if t in out:
+            out[t] = max(out[t], float(m.get("confidence", 0)))
+    return out
+
+
+def analyze_subgroup_per_second(
+    legacy_motion_per_second: List[Dict[str, Any]],
+    motion_per_second: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """
+    Match per-second motion combinations to subgroups from Movement Combination Summary.csv.
+    Returns list of {second, subgroups: [{subgroup, confidence}]} per second.
+    """
+    definitions = _load_subgroup_definitions()
+    if not definitions:
+        return []
+
+    # Index by second
+    legacy_by_sec = {r["second"]: r for r in legacy_motion_per_second}
+    motion_by_sec = {r["second"]: r for r in motion_per_second}
+    all_seconds = sorted(set(legacy_by_sec.keys()) | set(motion_by_sec.keys()))
+
+    result = []
+    for sec in all_seconds:
+        legacy_row = legacy_by_sec.get(sec, {"motions": []})
+        motion_row = motion_by_sec.get(sec, {"motions": []})
+        merged = _merged_motion_confidences(legacy_row, motion_row)
+
+        subgroups = []
+        for defn in definitions:
+            required = defn["required"]
+            if not required:
+                continue
+            # Confidence = min of required motion confidences (match strength)
+            confs = [merged.get(m, 0) for m in required]
+            confidence = min(confs) if confs else 0
+            if confidence > 0:
+                subgroups.append({"subgroup": defn["subgroup"], "confidence": round(confidence, 1)})
+
+        subgroups.sort(key=lambda x: -x["confidence"])
+        result.append({
+            "second": sec,
+            "subgroups": subgroups,
+            "adv_confidence": round(merged.get("Advancing", 0), 1),
+            "ret_confidence": round(merged.get("Retreating", 0), 1),
+            "pressing_confidence": round(merged.get("Pressing", 0), 1),
+            "punching_confidence": round(merged.get("Punching", 0), 1),
+        })
+
+    return result
+
+
+# Group mapping: A=Authority, C=Confidence, E=Engaging
+_GROUP_SUBGROUPS = {
+    "Authority": ["A1", "A2", "A4", "A5"],
+    "Confidence": ["C1", "C2", "C3", "C4", "C5", "C7", "C8"],
+    "Engaging": ["E1", "E2", "E3", "E4", "E5", "E6", "E7"],
+}
+
+
+def _scale_from_percentage(pct: float) -> str:
+    """Scale: Low < 5%, Moderate >= 5% and < 10%, High >= 10%."""
+    if pct < 5.0:
+        return "low"
+    if pct < 10.0:
+        return "moderate"
+    return "high"
+
+
+def compute_movement_summary(subgroup_per_second: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Summary table: count combinations per second, percentage, scale per group.
+    Returns {total_seconds, subgroups: [{subgroup, count}], groups: [{name, count, percentage, scale}]}.
+    """
+    if not subgroup_per_second:
+        return {"total_seconds": 0, "subgroups": [], "groups": []}
+
+    total_seconds = max(r["second"] for r in subgroup_per_second) + 1
+    if total_seconds <= 0:
+        total_seconds = 1
+
+    # Count seconds per subgroup
+    subgroup_counts: Dict[str, int] = defaultdict(int)
+    group_seconds: Dict[str, set] = defaultdict(set)  # group -> set of seconds
+
+    # Subgroups that require Advancing/Retreating/Pressing/Punching: count only if motion confidence meets threshold
+    definitions = _load_subgroup_definitions()
+    subgroups_requiring_adv = {d["subgroup"] for d in definitions if d.get("required") and "Advancing" in d["required"]}
+    subgroups_requiring_ret = {d["subgroup"] for d in definitions if d.get("required") and "Retreating" in d["required"]}
+    subgroups_requiring_pressing = {d["subgroup"] for d in definitions if d.get("required") and "Pressing" in d["required"]}
+    subgroups_requiring_punching = {d["subgroup"] for d in definitions if d.get("required") and "Punching" in d["required"]}
+
+    for row in subgroup_per_second:
+        sec = row["second"]
+        adv_conf = row.get("adv_confidence", 0)
+        ret_conf = row.get("ret_confidence", 0)
+        pressing_conf = row.get("pressing_confidence", 0)
+        punching_conf = row.get("punching_confidence", 0)
+        for s in row.get("subgroups", []):
+            sg = s.get("subgroup", "")
+            if not sg:
+                continue
+            conf = s.get("confidence", 0)
+            # Subgroups requiring Advancing: count only if Advancing confidence > 20%
+            if sg in subgroups_requiring_adv and adv_conf <= 20:
+                continue
+            # Subgroups requiring Retreating: count only if Retreating confidence > 50%
+            if sg in subgroups_requiring_ret and ret_conf <= 50:
+                continue
+            # Subgroups requiring Pressing: count only if Pressing confidence > 5%
+            if sg in subgroups_requiring_pressing and pressing_conf <= 5:
+                continue
+            # Subgroups requiring Punching: count only if Punching confidence > 5%
+            if sg in subgroups_requiring_punching and punching_conf <= 5:
+                continue
+            # Other subgroups: count only if subgroup confidence > 10%
+            special_motion_subgroups = subgroups_requiring_adv | subgroups_requiring_ret | subgroups_requiring_pressing | subgroups_requiring_punching
+            if sg not in special_motion_subgroups and conf <= 10:
+                continue
+            # Subgroups with special motions: still need subgroup confidence > 10%
+            if conf <= 10:
+                continue
+            subgroup_counts[sg] += 1
+            for group_name, subs in _GROUP_SUBGROUPS.items():
+                if sg in subs:
+                    group_seconds[group_name].add(sec)
+
+    subgroups_list = [
+        {"subgroup": sg, "count": subgroup_counts[sg]}
+        for sg in sorted(subgroup_counts.keys())
+    ]
+
+    groups_list = []
+    for group_name in ["Authority", "Confidence", "Engaging"]:
+        count = len(group_seconds.get(group_name, set()))
+        pct = round(count / total_seconds * 100, 1)
+        scale = _scale_from_percentage(pct)
+        groups_list.append({
+            "name": group_name,
+            "count": count,
+            "total_seconds": total_seconds,
+            "percentage": pct,
+            "scale": scale,
+        })
+
+    return {
+        "total_seconds": total_seconds,
+        "total_subgroups": len([d for d in _load_subgroup_definitions() if d.get("required")]),
+        "subgroups": subgroups_list,
+        "groups": groups_list,
+    }
+
+
 def analyze_gesture_effort(frames: List[dict]) -> Dict[str, Any]:
     """Matches report_core.analyze_video_mediapipe effort/shape detection and scoring."""
     if len(frames) < 2:
@@ -955,6 +1152,8 @@ def run_analysis(frames: List[dict]) -> Dict[str, Any]:
     legacy_motion_per_second = analyze_legacy_motion_per_second(frames)
     motion_per_second = analyze_motion_per_second(frames)
     effort_per_second = analyze_effort_per_second(motion_per_second)
+    subgroup_per_second = analyze_subgroup_per_second(legacy_motion_per_second, motion_per_second)
+    movement_summary = compute_movement_summary(subgroup_per_second)
 
     total = int(effort.get("total_indicators") or 1370)
     engaging_score = int(effort.get("engaging_score") or 4)
@@ -1035,4 +1234,6 @@ def run_analysis(frames: List[dict]) -> Dict[str, Any]:
         "legacy_motion_per_second": legacy_motion_per_second,
         "motion_per_second": motion_per_second,
         "effort_per_second": effort_per_second,
+        "subgroup_per_second": subgroup_per_second,
+        "movement_summary": movement_summary,
     }

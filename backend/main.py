@@ -248,7 +248,9 @@ async def upload_video(
 
         if cached is not None:
             frames, analysis = cached
+            print(f"[cache] HIT: {cache_key}.json", flush=True)
         else:
+            print(f"[cache] MISS: {cache_key}.json (no matching cache file)", flush=True)
             # Extract pose landmarks
             frames = extract_pose_landmarks(mp4_path)
             # Run pose analysis
@@ -266,6 +268,7 @@ async def upload_video(
             "analysis": analysis,
             "job_id": job_id,
             "from_cache": cached is not None,
+            "cache_key": cache_key,
         }
     except HTTPException:
         shutil.rmtree(job_dir, ignore_errors=True)
